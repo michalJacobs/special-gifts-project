@@ -27,7 +27,7 @@ class UserCreate(BaseModel):
     family_name: str | None = Field(default=None, min_length=1, max_length=255)
 
 
-class FamilyFounderCreate(BaseModel):
+class UserAndFamilyRegistrationRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     email: EmailStr
     password: str = Field(..., min_length=8)
@@ -44,7 +44,7 @@ class UserRead(BaseModel):
 
     id: int
     name: str
-    email: EmailStr
+    email: str
     family_id: int
 
 

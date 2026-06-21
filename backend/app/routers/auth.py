@@ -1,78 +1,117 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jwt import InvalidTokenError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models, schemas
 from app.core.database import get_db
 from app.core.security import create_access_token, decode_access_token, hash_password, verify_password
+from app.id_generator import generate_unique_four_digit_id
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+FOUR_DIGIT_ID_MODELS = (models.Family, models.User)
 
 
 @router.post("/register", response_model=schemas.UserRead, status_code=status.HTTP_201_CREATED)
 def register_user(payload: schemas.UserCreate, db: Session = Depends(get_db)) -> models.User:
-    existing_user = db.scalar(select(models.User).where(models.User.email == payload.email))
-    if existing_user:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email is already registered")
+    try:
+        normalized_email = str(payload.email).lower()
+        existing_user = db.scalar(select(models.User).where(models.User.email == normalized_email))
+        if existing_user:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email is already registered")
 
-    if payload.family_id is None and payload.family_name is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Provide either family_id or family_name",
+        if payload.family_id is None and payload.family_name is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Provide either family_id or family_name",
+            )
+
+        if payload.family_id is not None:
+            family = db.get(models.Family, payload.family_id)
+            if family is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Family not found")
+        else:
+            family = db.scalar(select(models.Family).where(models.Family.name == payload.family_name))
+            if family is None:
+                family = models.Family(
+                    id=generate_unique_four_digit_id(db, models.Family, FOUR_DIGIT_ID_MODELS),
+                    name=payload.family_name or "",
+                )
+                db.add(family)
+                db.flush()
+
+        user = models.User(
+            id=generate_unique_four_digit_id(db, models.User, FOUR_DIGIT_ID_MODELS),
+            name=payload.name,
+            email=normalized_email,
+            hashed_password=hash_password(payload.password),
+            family_id=family.id,
         )
-
-    if payload.family_id is not None:
-        family = db.get(models.Family, payload.family_id)
-        if family is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Family not found")
-    else:
-        family = db.scalar(select(models.Family).where(models.Family.name == payload.family_name))
-        if family is None:
-            family = models.Family(name=payload.family_name or "")
-            db.add(family)
-            db.flush()
-
-    user = models.User(
-        name=payload.name,
-        email=str(payload.email).lower(),
-        hashed_password=hash_password(payload.password),
-        family_id=family.id,
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    return user
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        return user
+    except HTTPException:
+        db.rollback()
+        raise
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email is already registered") from None
+    except Exception:
+        db.rollback()
+        raise
 
 
 @router.post("/create-family", response_model=schemas.AuthWithUser, status_code=status.HTTP_201_CREATED)
 def create_family_with_founder(
-    payload: schemas.FamilyFounderCreate,
+    payload: schemas.UserAndFamilyRegistrationRequest,
     db: Session = Depends(get_db),
 ) -> schemas.AuthWithUser:
-    existing_user = db.scalar(select(models.User).where(models.User.email == str(payload.email).lower()))
-    if existing_user:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email is already registered")
+    normalized_email = str(payload.email).lower()
+    hashed_password = hash_password(payload.password)
 
-    existing_family = db.scalar(select(models.Family).where(models.Family.name == payload.family_name))
-    if existing_family:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Family name already exists")
+    try:
+        with db.begin():
+            existing_user = db.scalar(select(models.User).where(models.User.email == normalized_email))
+            if existing_user:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email is already registered")
 
-    family = models.Family(name=payload.family_name)
-    db.add(family)
-    db.flush()
+            existing_family = db.scalar(select(models.Family).where(models.Family.name == payload.family_name))
+            if existing_family:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Family name already exists")
 
-    user = models.User(
-        name=payload.name,
-        email=str(payload.email).lower(),
-        hashed_password=hash_password(payload.password),
-        family_id=family.id,
-    )
-    db.add(user)
-    db.commit()
+            family = models.Family(
+                id=generate_unique_four_digit_id(db, models.Family, FOUR_DIGIT_ID_MODELS),
+                name=payload.family_name,
+            )
+            db.add(family)
+            db.flush()
+
+            user = models.User(
+                id=generate_unique_four_digit_id(db, models.User, FOUR_DIGIT_ID_MODELS),
+                name=payload.name,
+                email=normalized_email,
+                hashed_password=hashed_password,
+                family_id=family.id,
+            )
+            db.add(user)
+    except HTTPException:
+        db.rollback()
+        raise
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Could not create user and family because a unique value already exists",
+        ) from None
+    except Exception:
+        db.rollback()
+        raise
+
     db.refresh(family)
     db.refresh(user)
 

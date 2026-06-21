@@ -5,10 +5,12 @@ from sqlalchemy.orm import Session, selectinload
 from app import models, schemas
 from app.core.database import get_db
 from app.core.security import hash_password
+from app.id_generator import generate_unique_four_digit_id
 from app.routers.auth import get_current_user
 
 
 router = APIRouter(tags=["entities"])
+FOUR_DIGIT_ID_MODELS = (models.Family, models.User)
 
 
 @router.post("/families", response_model=schemas.FamilyRead, status_code=status.HTTP_201_CREATED)
@@ -21,7 +23,10 @@ def create_family(
     if existing_family:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Family name already exists")
 
-    family = models.Family(name=payload.name)
+    family = models.Family(
+        id=generate_unique_four_digit_id(db, models.Family, FOUR_DIGIT_ID_MODELS),
+        name=payload.name,
+    )
     db.add(family)
     db.commit()
     db.refresh(family)
@@ -98,11 +103,15 @@ def create_user(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can only add users to your family")
         family = db.scalar(select(models.Family).where(models.Family.name == payload.family_name))
         if family is None:
-            family = models.Family(name=payload.family_name or "")
+            family = models.Family(
+                id=generate_unique_four_digit_id(db, models.Family, FOUR_DIGIT_ID_MODELS),
+                name=payload.family_name or "",
+            )
             db.add(family)
             db.flush()
 
     user = models.User(
+        id=generate_unique_four_digit_id(db, models.User, FOUR_DIGIT_ID_MODELS),
         name=payload.name,
         email=str(payload.email).lower(),
         hashed_password=hash_password(payload.password),
@@ -128,9 +137,17 @@ def list_users(
 
 @router.get("/users/me", response_model=schemas.UserWithFamilyRead)
 def get_me(
+    db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ) -> models.User:
-    return current_user
+    user = db.scalar(
+        select(models.User)
+        .where(models.User.id == current_user.id)
+        .options(selectinload(models.User.family))
+    )
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return user
 
 
 @router.get("/users/{user_id}", response_model=schemas.UserWithFamilyRead)

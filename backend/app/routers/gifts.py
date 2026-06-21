@@ -9,7 +9,14 @@ from app import models, schemas
 from app.core.config import settings
 from app.core.database import get_db
 from app.routers.auth import get_current_user
-from app.services import mark_contribution_paid, send_payment_request_email, split_amount_equally
+from app.services import (
+    AllocationValidationError,
+    mark_contribution_paid,
+    send_contribution_amount_changed_email,
+    send_gift_cancellation_email,
+    send_payment_request_email,
+    validate_contribution_allocations,
+)
 
 
 router = APIRouter(tags=["gifts"])
@@ -22,62 +29,19 @@ def _validate_allocations(
     target_amount: Decimal,
     custom_allocations: list[schemas.ContributionAllocation] | None,
 ) -> list[tuple[models.User, Decimal]]:
-    if custom_allocations is None:
-        contributors = db.scalars(
-            select(models.User)
-            .where(models.User.family_id == family_id)
-            .where(models.User.id != recipient_user_id)
-            .order_by(models.User.id)
-        ).all()
-        if not contributors:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="At least one non-recipient family member is required",
-            )
-
-        allocations = split_amount_equally(Decimal(target_amount), len(contributors))
-        return list(zip(contributors, allocations, strict=True))
-
-    if not custom_allocations:
+    try:
+        return validate_contribution_allocations(
+            db,
+            family_id,
+            recipient_user_id,
+            target_amount,
+            custom_allocations,
+        )
+    except AllocationValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="At least one participant is required",
-        )
-
-    user_ids = [allocation.user_id for allocation in custom_allocations]
-    if len(user_ids) != len(set(user_ids)):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Participant list cannot contain duplicates",
-        )
-
-    if recipient_user_id in user_ids:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Gift recipient cannot contribute to their own gift",
-        )
-
-    contributors = db.scalars(
-        select(models.User)
-        .where(models.User.family_id == family_id)
-        .where(models.User.id.in_(user_ids))
-    ).all()
-    contributor_by_id = {user.id: user for user in contributors}
-    missing_user_ids = [user_id for user_id in user_ids if user_id not in contributor_by_id]
-    if missing_user_ids:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="All participants must belong to the gift family",
-        )
-
-    total_allocated = sum((allocation.allocated_amount for allocation in custom_allocations), Decimal("0.00"))
-    if total_allocated != target_amount:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Contribution allocations must exactly equal the target amount",
-        )
-
-    return [(contributor_by_id[allocation.user_id], allocation.allocated_amount) for allocation in custom_allocations]
+            detail=exc.detail,
+        ) from exc
 
 
 @router.post("/gifts", response_model=schemas.GiftRead, status_code=status.HTTP_201_CREATED)
@@ -153,13 +117,14 @@ def create_gift(
 def update_gift(
     gift_id: int,
     payload: schemas.GiftUpdate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ) -> models.Gift:
     gift = db.scalar(
         select(models.Gift)
         .where(models.Gift.id == gift_id)
-        .options(selectinload(models.Gift.contributions))
+        .options(selectinload(models.Gift.contributions).selectinload(models.Contribution.user))
     )
     if gift is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gift not found")
@@ -175,6 +140,17 @@ def update_gift(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only the gift creator can edit this gift",
         )
+
+    if any(contribution.is_paid for contribution in gift.contributions):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Gift cannot be edited after a participant has paid",
+        )
+
+    previous_amount_by_user_id = {
+        contribution.user_id: contribution.allocated_amount
+        for contribution in gift.contributions
+    }
 
     contribution_allocations = _validate_allocations(
         db,
@@ -199,14 +175,22 @@ def update_gift(
                 allocated_amount=allocated_amount,
             )
         )
+        if previous_amount_by_user_id.get(contributor.id) != allocated_amount:
+            background_tasks.add_task(
+                send_contribution_amount_changed_email,
+                contributor.email,
+                payload.title,
+                float(allocated_amount),
+                current_user.name,
+            )
 
-    db.add(gift)
     db.commit()
 
     updated_gift = db.scalar(
         select(models.Gift)
         .where(models.Gift.id == gift.id)
         .options(selectinload(models.Gift.contributions))
+        .execution_options(populate_existing=True)
     )
     if updated_gift is None:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Gift update failed")
@@ -216,10 +200,15 @@ def update_gift(
 @router.delete("/gifts/{gift_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_gift(
     gift_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ) -> None:
-    gift = db.get(models.Gift, gift_id)
+    gift = db.scalar(
+        select(models.Gift)
+        .where(models.Gift.id == gift_id)
+        .options(selectinload(models.Gift.contributions).selectinload(models.Contribution.user))
+    )
     if gift is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gift not found")
 
@@ -233,6 +222,21 @@ def delete_gift(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only the gift creator can delete this gift",
+        )
+
+    if any(contribution.is_paid for contribution in gift.contributions):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Gift cannot be deleted after a participant has paid",
+        )
+
+    recipient_emails = {contribution.user.email for contribution in gift.contributions}
+    for to_email in recipient_emails:
+        background_tasks.add_task(
+            send_gift_cancellation_email,
+            to_email,
+            gift.title,
+            current_user.name,
         )
 
     db.delete(gift)

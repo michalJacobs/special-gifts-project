@@ -1,19 +1,15 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Gift, UserPlus } from "lucide-react";
+import RequiredLabel from "../components/ui/RequiredLabel.jsx";
+import Spinner from "../components/ui/Spinner.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 
-function RequiredLabel({ children }) {
-  return (
-    <span className="mb-1 block text-sm font-medium">
-      {children} <span className="text-red-600">*</span>
-    </span>
-  );
-}
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function Register() {
   const navigate = useNavigate();
-  const { register } = useAuth();
+  const { login, register } = useAuth();
   const [form, setForm] = useState({
     name: "",
     email: "",
@@ -22,7 +18,6 @@ export default function Register() {
   });
   const [fieldErrors, setFieldErrors] = useState({});
   const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
   const [loading, setLoading] = useState(false);
 
   function updateField(event) {
@@ -31,18 +26,25 @@ export default function Register() {
 
   function validate() {
     const nextErrors = {};
+    const familyId = Number(form.family_id);
+
     if (!form.name.trim()) {
       nextErrors.name = "יש להזין שם מלא.";
     }
     if (!form.email.trim()) {
       nextErrors.email = "יש להזין כתובת אימייל.";
+    } else if (!EMAIL_PATTERN.test(form.email.trim())) {
+      nextErrors.email = "יש להזין כתובת אימייל תקינה.";
     }
     if (!form.password) {
       nextErrors.password = "יש להזין סיסמה.";
     }
-    if (!form.family_id || Number(form.family_id) < 1) {
-      nextErrors.family_id = "יש להזין מזהה משפחה תקין.";
+    if (!form.family_id.trim()) {
+      nextErrors.family_id = "יש להזין קוד משפחה.";
+    } else if (!Number.isInteger(familyId) || familyId <= 0) {
+      nextErrors.family_id = "יש להזין קוד משפחה תקין.";
     }
+
     setFieldErrors(nextErrors);
     return Object.keys(nextErrors).length === 0;
   }
@@ -54,7 +56,6 @@ export default function Register() {
     }
 
     setError("");
-    setSuccess("");
     setLoading(true);
 
     try {
@@ -64,8 +65,11 @@ export default function Register() {
         password: form.password,
         family_id: Number(form.family_id)
       });
-      setSuccess("החשבון נוצר. אפשר להתחבר עכשיו.");
-      setTimeout(() => navigate("/login"), 700);
+      await login({
+        email: form.email.trim(),
+        password: form.password
+      });
+      navigate("/", { replace: true });
     } catch (registerError) {
       setError(registerError.message);
     } finally {
@@ -81,20 +85,14 @@ export default function Register() {
             <Gift className="h-6 w-6" />
           </div>
           <div>
-            <h1 className="text-xl font-semibold">הצטרפות למשפחה קיימת</h1>
-            <p className="text-sm text-stone-600">צרו פרופיל בתוך קופה משפחתית קיימת.</p>
+            <h1 className="text-xl font-semibold">הצטרפות למשפחה</h1>
+            <p className="text-sm text-stone-600">צרו משתמש חדש והצטרפו למשפחה קיימת בעזרת קוד המשפחה.</p>
           </div>
         </div>
 
         {error ? (
           <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
             {error}
-          </div>
-        ) : null}
-
-        {success ? (
-          <div className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-            {success}
           </div>
         ) : null}
 
@@ -135,12 +133,10 @@ export default function Register() {
           </label>
 
           <label className="block">
-            <RequiredLabel>מזהה משפחה</RequiredLabel>
+            <RequiredLabel>קוד משפחה</RequiredLabel>
             <input
               className="field"
               name="family_id"
-              type="number"
-              min="1"
               inputMode="numeric"
               value={form.family_id}
               onChange={updateField}
@@ -150,15 +146,15 @@ export default function Register() {
           </label>
 
           <button className="btn-primary w-full" type="submit" disabled={loading}>
-            {loading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" /> : <UserPlus className="h-4 w-4" />}
-            {loading ? "יוצר חשבון..." : "יצירת חשבון"}
+            {loading ? <Spinner /> : <UserPlus className="h-4 w-4" />}
+            {loading ? "מצטרף למשפחה..." : "הצטרפות למשפחה"}
           </button>
         </form>
 
         <p className="mt-6 text-center text-sm text-stone-600">
-          כבר רשומים?{" "}
-          <Link className="font-semibold text-moss hover:text-ink" to="/login">
-            התחברות
+          רוצים לפתוח משפחה חדשה?{" "}
+          <Link className="font-semibold text-moss hover:text-ink" to="/create-family">
+            יצירת משפחה
           </Link>
         </p>
       </section>

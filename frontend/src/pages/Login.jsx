@@ -1,15 +1,10 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Gift, LogIn } from "lucide-react";
+import RequiredLabel from "../components/ui/RequiredLabel.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 
-function RequiredLabel({ children }) {
-  return (
-    <span className="mb-1 block text-sm font-medium">
-      {children} <span className="text-red-600">*</span>
-    </span>
-  );
-}
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function Login() {
   const navigate = useNavigate();
@@ -27,6 +22,8 @@ export default function Login() {
     const nextErrors = {};
     if (!form.email.trim()) {
       nextErrors.email = "יש להזין כתובת אימייל.";
+    } else if (!EMAIL_PATTERN.test(form.email.trim())) {
+      nextErrors.email = "יש להזין כתובת אימייל תקינה.";
     }
     if (!form.password) {
       nextErrors.password = "יש להזין סיסמה.";

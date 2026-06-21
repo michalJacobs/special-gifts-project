@@ -1,0 +1,38 @@
+# Family Gift Fund - AI Coding Rules & Context
+
+## 1. Project Overview & Core Architecture
+- **System:** An application allowing families to create a shared fund, join via a 4-digit family code, create gifts, and split contributions.
+- **Tech Stack:** FastAPI, SQLAlchemy, SQLite, Alembic (Backend) | React, Vite, React Router, Axios, Tailwind CSS (Frontend).
+- **Family Isolation:** Almost every endpoint MUST verify that the resource belongs to `current_user.family_id`.
+- **IDs:** Both `Family.id` and `User.id` are 4-digit strings.
+- **Amounts:** Handled as `Decimal/Numeric(10,2)` in the backend. The frontend handles logic in Agorot (cents) to avoid floating-point errors.
+- **Auth:** Stateless JWT. Token stored in `localStorage` frontend, sent via `Authorization: Bearer`.
+- **Immutability:** Gifts cannot be edited or deleted once the first payment is made.
+
+## 2. General Coding Standards
+- **Single Responsibility Principle (SRP):** Every function, hook, or component must do exactly one thing. If a function is longer than 20-30 lines, split it.
+- **DRY (Don't Repeat Yourself):** Extract repetitive logic into utility functions.
+- **No Magic Strings/Numbers:** Use constants or enums for strict values.
+- **Error Handling:** Never use empty `try/catch` blocks. Always handle specific exceptions and return appropriate HTTP status codes or UI error states.
+- **Refactoring Rule:** When asked to refactor, DO NOT change the underlying business logic or output. Only improve the structure, readability, and modularity.
+- **No Hallucinations:** Do not invent functions, libraries, or schemas that are not defined in `models.py` or `schemas.py`.
+
+## 3. Backend Architecture (FastAPI)
+- **Strict Separation of Concerns (Fat Services, Skinny Routers):**
+  - `routers/`: Must only handle HTTP requests/responses and dependency injection. NO complex business logic allowed here.
+  - `services.py`: Must contain ALL business logic (allocation, validation). Should not know about HTTP, Request, or FastAPI specifics.
+  - `models.py` & `schemas.py`: Maintain strict separation between SQLAlchemy database models and Pydantic validation schemas.
+- **Dependencies:** Use FastAPI's `Depends` for authentication and database sessions.
+- **Type Hinting:** 100% strict type hints are mandatory for all function parameters and return values.
+- **Error Handling:** Always raise a structured `HTTPException` for web errors. Do not return custom error dictionary payloads.
+- **Background Tasks:** Use FastAPI `BackgroundTasks` for sending emails (via Resend), not external message queues.
+
+## 4. Frontend Architecture (React)
+- **Clean Components:** React components (`.jsx`) must strictly focus on UI presentation.
+- **Logic Extraction:** Move API calls, state management, and complex calculations into custom hooks (e.g., in `hooks/` like `useGiftForm`, `useDashboard`) or utility functions.
+- **Prop Drilling:** Avoid passing props down multiple levels. Use Context (like `AuthContext`) appropriately.
+- **Error Handling:** Rely on Axios interceptors for global error handling. Do not scatter `try/catch` blocks across all UI components.
+
+## 5. Security & Configuration
+- **No Hardcoded Secrets:** Never hardcode secrets (JWT secret, Webhook secret, Resend API key). Ensure they are referenced from environment variables.
+- **Webhook Security:** The `/payments/webhook` must strictly validate the `X-Webhook-Secret` header before marking a contribution as `is_paid=True`.

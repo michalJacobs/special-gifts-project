@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import apiClient from "../api/client.js";
+import { getApiError } from "../utils/apiError.js";
 
 const AuthContext = createContext(null);
 const TOKEN_KEY = "familyGiftToken";
@@ -13,10 +14,6 @@ function decodeJwtPayload(token) {
   } catch {
     return null;
   }
-}
-
-function getApiError(error, fallback = "Something went wrong. Please try again.") {
-  return error?.response?.data?.detail || error?.message || fallback;
 }
 
 export function AuthProvider({ children }) {
@@ -115,13 +112,24 @@ export function AuthProvider({ children }) {
     }
   }, []);
 
+  const activateAccessToken = useCallback(
+    async (token) => {
+      localStorage.setItem(TOKEN_KEY, token);
+      return hydrateUser(token);
+    },
+    [hydrateUser]
+  );
+
   const createFamily = useCallback(
-    async (payload) => {
+    async (payload, options = {}) => {
       try {
         const response = await apiClient.post("/auth/create-family", payload);
         const token = response.data.access_token;
-        localStorage.setItem(TOKEN_KEY, token);
-        const user = await hydrateUser(token);
+        if (options.activate === false) {
+          return response.data;
+        }
+
+        const user = await activateAccessToken(token);
         return { ...response.data, user };
       } catch (error) {
         localStorage.removeItem(TOKEN_KEY);
@@ -129,7 +137,7 @@ export function AuthProvider({ children }) {
         throw new Error(getApiError(error, "Family creation failed."));
       }
     },
-    [hydrateUser]
+    [activateAccessToken]
   );
 
   const logout = useCallback(() => {
@@ -140,13 +148,14 @@ export function AuthProvider({ children }) {
   const value = useMemo(
     () => ({
       currentUser,
+      activateAccessToken,
       createFamily,
       initializing,
       login,
       logout,
       register
     }),
-    [currentUser, createFamily, initializing, login, logout, register]
+    [currentUser, activateAccessToken, createFamily, initializing, login, logout, register]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
