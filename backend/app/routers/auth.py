@@ -74,34 +74,32 @@ def create_family_with_founder(
     normalized_email = str(payload.email).lower()
     hashed_password = hash_password(payload.password)
 
+    existing_user = db.scalar(select(models.User).where(models.User.email == normalized_email))
+    if existing_user:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email is already registered")
+
+    existing_family = db.scalar(select(models.Family).where(models.Family.name == payload.family_name))
+    if existing_family:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Family name already exists")
+
     try:
-        with db.begin():
-            existing_user = db.scalar(select(models.User).where(models.User.email == normalized_email))
-            if existing_user:
-                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email is already registered")
+        family = models.Family(
+            id=generate_unique_four_digit_id(db, models.Family, FOUR_DIGIT_ID_MODELS),
+            name=payload.family_name,
+        )
+        db.add(family)
+        db.flush() 
 
-            existing_family = db.scalar(select(models.Family).where(models.Family.name == payload.family_name))
-            if existing_family:
-                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Family name already exists")
-
-            family = models.Family(
-                id=generate_unique_four_digit_id(db, models.Family, FOUR_DIGIT_ID_MODELS),
-                name=payload.family_name,
-            )
-            db.add(family)
-            db.flush()
-
-            user = models.User(
-                id=generate_unique_four_digit_id(db, models.User, FOUR_DIGIT_ID_MODELS),
-                name=payload.name,
-                email=normalized_email,
-                hashed_password=hashed_password,
-                family_id=family.id,
-            )
-            db.add(user)
-    except HTTPException:
-        db.rollback()
-        raise
+        user = models.User(
+            id=generate_unique_four_digit_id(db, models.User, FOUR_DIGIT_ID_MODELS),
+            name=payload.name,
+            email=normalized_email,
+            hashed_password=hashed_password,
+            family_id=family.id,
+        )
+        db.add(user)
+        db.commit() 
+        
     except IntegrityError:
         db.rollback()
         raise HTTPException(
@@ -120,7 +118,6 @@ def create_family_with_founder(
         user=user,
         family=family,
     )
-
 
 @router.post("/login", response_model=schemas.Token)
 def login(payload: schemas.UserLogin, db: Session = Depends(get_db)) -> schemas.Token:
