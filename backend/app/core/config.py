@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     """
 
     app_name: str = "Family Gift Fund Management System"
-    database_url: str = "sqlite:///./family_gift_fund.db"
+    database_url: str = "sqlite:///./local.db"
     jwt_secret_key: str = "dev-only-jwt-secret-change-me"
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
